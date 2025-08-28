@@ -1,0 +1,55 @@
+{
+  "info": {
+    "name": "Trustpilot Auto-Reply Bot",
+    "_postman_id": "905ee81e-2067-4c27-8329-3e97c7c374c8",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8080/health",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "health"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Webhook Test (2\u2605 Fresco IT)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"review_id\": \"test-2star-fresh-it\",\n  \"stars\": 2,\n  \"created_at\": \"2025-08-27T10:20:30Z\",\n  \"language\": \"it\",\n  \"consumer_name\": \"Cliente\",\n  \"company_response_exists\": false\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/webhook/trustpilot",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "webhook",
+            "trustpilot"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
