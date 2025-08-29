@@ -175,9 +175,11 @@ from fastapi.responses import JSONResponse
 async def _mock_trustpilot_reply(review_id: str, payload: dict):
     # Simula la risposta OK di Trustpilot
     return JSONResponse({"mocked": True, "review_id": review_id, "body": payload}, status_code=201)
+ 
     @app.get("/debug/tp_base")
 def debug_tp_base():
     return {"TP_API_BASE": TP_API_BASE}
+    
 # Healthcheck
 @app.get("/health")
 def health():
