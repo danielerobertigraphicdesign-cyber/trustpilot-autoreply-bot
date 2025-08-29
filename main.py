@@ -4,6 +4,7 @@ from typing import Optional
 
 import httpx, pytz
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -75,11 +76,15 @@ def save_log(review_id: str, status: str, template_key: str, lang: str,
     conn.commit()
 
 def choose_lang(lang: Optional[str]) -> str:
-    if not lang: return "IT"
+    if not lang:
+        return "IT"
     l = lang.lower()
-    if l.startswith("it"): return "IT"
-    if l.startswith("en"): return "EN"
-    if l.startswith("fr"): return "FR"
+    if l.startswith("it"):
+        return "IT"
+    if l.startswith("en"):
+        return "EN"
+    if l.startswith("fr"):
+        return "FR"
     return "IT"
 
 def template_for(stars: int, period: str, lang: str) -> Optional[str]:
@@ -95,7 +100,11 @@ async def alert_error(title: str, detail: str):
 
 async def send_approval(review_id: str, message: str, stars: int, period: str, lang: str):
     if APP_APPROVAL_CHANNEL == "slack" and APP_APPROVAL_WEBHOOK:
-        txt = f"*Trustpilot review {review_id}*\nStars: {stars} | Period: {period} | Lang: {lang}\n\n*Proposed reply:*\n{message}"
+        txt = (
+            f"*Trustpilot review {review_id}*\n"
+            f"Stars: {stars} | Period: {period} | Lang: {lang}\n\n"
+            f"*Proposed reply:*\n{message}"
+        )
         await slack_post(APP_APPROVAL_WEBHOOK, txt)
 
 async def post_reply(review_id: str, message: str) -> httpx.Response:
@@ -120,7 +129,7 @@ class ReviewEvent(BaseModel):
     consumer_name: Optional[str] = None
     company_response_exists: Optional[bool] = False
 
-# === ENDPOINT WEBHOOK (questo è quello che ti serve) ===
+# === ENDPOINT WEBHOOK ===
 @app.post("/webhook/trustpilot")
 async def handle_trustpilot_event(event: ReviewEvent):
     if already_replied(event.review_id):
@@ -137,6 +146,7 @@ async def handle_trustpilot_event(event: ReviewEvent):
 
     lang = choose_lang(event.language)
     period = period_from_age(local_age_days(event.created_at))
+
     tpl = template_for(event.stars, period, lang)
     if not tpl:
         save_log(event.review_id, "skip_template_missing", "", lang, event.stars, period, "")
@@ -149,7 +159,12 @@ async def handle_trustpilot_event(event: ReviewEvent):
     # 1–2★ fresche: bozza in approvazione
     if APP_APPROVAL_MODE and event.stars <= 2 and period == "Fresco":
         await send_approval(event.review_id, message, event.stars, period, lang)
-        save_log(event.review_id, "queued_for_approval", f"{event.stars}_{period}_{lang}", lang, event.stars, period, message)
+        save_log(
+            event.review_id,
+            "queued_for_approval",
+            f"{event.stars}_{period}_{lang}",
+            lang, event.stars, period, message
+        )
         return {"status": "queued_for_approval"}
 
     # Pubblicazione diretta
@@ -169,19 +184,17 @@ async def handle_trustpilot_event(event: ReviewEvent):
         save_log(event.review_id, "error_exception", f"{event.stars}_{period}_{lang}", lang, event.stars, period, message)
         await alert_error("Exception while replying", f"review_id={event.review_id} error={str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-from fastapi.responses import JSONResponse
 
+# --- MOCK & DEBUG ---  (tenere a livello zero)
 @app.post("/v1/private/reviews/{review_id}/reply")
 async def _mock_trustpilot_reply(review_id: str, payload: dict):
-    # Simula la risposta OK di Trustpilot
+    # Usato solo nei test quando TP_API_BASE punta a questo servizio
     return JSONResponse({"mocked": True, "review_id": review_id, "body": payload}, status_code=201)
- 
-    @app.get("/debug/tp_base")
+
+@app.get("/debug/tp_base")
 def debug_tp_base():
     return {"TP_API_BASE": TP_API_BASE}
-    
-# Healthcheck
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
