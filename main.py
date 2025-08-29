@@ -169,7 +169,12 @@ async def handle_trustpilot_event(event: ReviewEvent):
         save_log(event.review_id, "error_exception", f"{event.stars}_{period}_{lang}", lang, event.stars, period, message)
         await alert_error("Exception while replying", f"review_id={event.review_id} error={str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+from fastapi.responses import JSONResponse
 
+@app.post("/v1/private/reviews/{review_id}/reply")
+async def _mock_trustpilot_reply(review_id: str, payload: dict):
+    # Simula la risposta OK di Trustpilot
+    return JSONResponse({"mocked": True, "review_id": review_id, "body": payload}, status_code=201)
 # Healthcheck
 @app.get("/health")
 def health():
