@@ -18,6 +18,7 @@ APP_APPROVAL_MODE = os.getenv("APP_APPROVAL_MODE", "true").lower() == "true"
 APP_APPROVAL_CHANNEL = os.getenv("APP_APPROVAL_CHANNEL", "none")
 APP_APPROVAL_WEBHOOK = os.getenv("APP_APPROVAL_WEBHOOK", "")
 TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "templates.json")
+APP_ALLOWED_STARS = {int(s) for s in os.getenv("APP_ALLOWED_STARS", "1,2,3,4,5").split(",") if s.strip().isdigit()}
 
 ALERT_CHANNEL = os.getenv("ALERT_CHANNEL", "none")
 ALERT_SLACK_WEBHOOK = os.getenv("ALERT_SLACK_WEBHOOK", "")
