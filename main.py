@@ -1,65 +1,37 @@
-
 import os, json, sqlite3, hashlib, uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
-import pytz
-from fastapi import FastAPI, Header, HTTPException
+import httpx, pytz
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# === Config da ENV ===
 TP_API_BASE = os.getenv("TP_API_BASE", "https://api.trustpilot.com")
 TP_BUSINESS_TOKEN = os.getenv("TP_BUSINESS_TOKEN", "")
 TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Rome")
+
 APP_APPROVAL_MODE = os.getenv("APP_APPROVAL_MODE", "true").lower() == "true"
 APP_APPROVAL_CHANNEL = os.getenv("APP_APPROVAL_CHANNEL", "none")
 APP_APPROVAL_WEBHOOK = os.getenv("APP_APPROVAL_WEBHOOK", "")
-TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "templates.json")
-APP_ALLOWED_STARS = {int(s) for s in os.getenv("APP_ALLOWED_STARS", "1,2,3,4,5").split(",") if s.strip().isdigit()}
 
 ALERT_CHANNEL = os.getenv("ALERT_CHANNEL", "none")
 ALERT_SLACK_WEBHOOK = os.getenv("ALERT_SLACK_WEBHOOK", "")
-ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "")
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
-SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() == "true"
 
-async def send_slack_alert(text: str):
-    if ALERT_CHANNEL in ("slack", "both") and ALERT_SLACK_WEBHOOK:
-        async with httpx.AsyncClient(timeout=20) as client:
-            try:
-                await client.post(ALERT_SLACK_WEBHOOK, json={"text": text})
-            except Exception:
-                pass
+# Se vuoi rispondere solo a 4–5 stelle: su Render metti APP_ALLOWED_STARS=4,5
+APP_ALLOWED_STARS = {
+    int(s) for s in os.getenv("APP_ALLOWED_STARS", "1,2,3,4,5").split(",") if s.strip().isdigit()
+}
 
-def send_email_alert(subject: str, body: str):
-    if ALERT_CHANNEL in ("email", "both") and ALERT_EMAIL_TO and SMTP_HOST and SMTP_USER and SMTP_PASS:
-        msg = f"From: {SMTP_USER}\r\nTo: {ALERT_EMAIL_TO}\r\nSubject: {subject}\r\n\r\n{body}"
-        try:
-            context = ssl.create_default_context()
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-                if SMTP_TLS:
-                    server.starttls(context=context)
-                server.login(SMTP_USER, SMTP_PASS)
-                server.sendmail(SMTP_USER, [ALERT_EMAIL_TO], msg.encode("utf-8"))
-        except Exception:
-            pass
-
-async def alert_error(title: str, detail: str):
-    text = f":warning: {title}\n{detail}"
-    await send_slack_alert(text)
-    send_email_alert(title, detail)
-
-
+# === App & DB ===
 app = FastAPI(title="Trustpilot Auto-Reply Bot")
 DB_PATH = os.path.join(os.path.dirname(__file__), "bot.sqlite3")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-conn.execute("""CREATE TABLE IF NOT EXISTS replies (
+conn.execute("""
+CREATE TABLE IF NOT EXISTS replies (
     review_id TEXT PRIMARY KEY,
     status TEXT,
     template_key TEXT,
@@ -68,78 +40,87 @@ conn.execute("""CREATE TABLE IF NOT EXISTS replies (
     period TEXT,
     message_hash TEXT,
     created_at TEXT
-)""")
+)
+""")
 conn.commit()
 
+# === Template ===
+TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "templates.json")
 with open(TEMPLATES_PATH, "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
 
+# === Helper ===
 def local_age_days(created_at_iso: str) -> int:
-    dt = datetime.fromisoformat(created_at_iso.replace("Z","+00:00"))
+    dt = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
     tz = pytz.timezone(TIMEZONE)
     local_now = datetime.now(timezone.utc).astimezone(tz)
     local_dt = dt.astimezone(tz)
-    delta = local_now - local_dt
-    return max(0, delta.days)
+    return max(0, (local_now - local_dt).days)
 
-def period_from_age(age_days: int) -> str:
-    return "Fresco" if age_days <= 5 else "Vecchio"
+def period_from_age(days: int) -> str:
+    return "Fresco" if days <= 5 else "Vecchio"
 
 def already_replied(review_id: str) -> bool:
     cur = conn.execute("SELECT 1 FROM replies WHERE review_id = ?", (review_id,))
     return cur.fetchone() is not None
 
-def save_log(review_id: str, status: str, template_key: str, lang: str, stars: int, period: str, message: str):
-    mh = hashlib.sha256(message.encode("utf-8")).hexdigest()
-    conn.execute("REPLACE INTO replies(review_id,status,template_key,lang,stars,period,message_hash,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                 (review_id, status, template_key, lang, stars, period, mh, datetime.utcnow().isoformat()+"Z"))
+def save_log(review_id: str, status: str, template_key: str, lang: str,
+             stars: int, period: str, message: str):
+    mh = hashlib.sha256(message.encode("utf-8")).hexdigest() if message else ""
+    conn.execute(
+        "REPLACE INTO replies(review_id,status,template_key,lang,stars,period,message_hash,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (review_id, status, template_key, lang, stars, period, mh, datetime.utcnow().isoformat() + "Z"),
+    )
     conn.commit()
 
 def choose_lang(lang: Optional[str]) -> str:
-    if not lang:
-        return "IT"
-    code = lang.lower()
-    if code.startswith("it"):
-        return "IT"
-    if code.startswith("en"):
-        return "EN"
-    if code.startswith("fr"):
-        return "FR"
+    if not lang: return "IT"
+    l = lang.lower()
+    if l.startswith("it"): return "IT"
+    if l.startswith("en"): return "EN"
+    if l.startswith("fr"): return "FR"
     return "IT"
 
 def template_for(stars: int, period: str, lang: str) -> Optional[str]:
-    key = f"{stars}_{period}_{lang}"
-    return TEMPLATES.get(key)
+    return TEMPLATES.get(f"{stars}_{period}_{lang}")
 
-async def post_reply(review_id: str, message: str):
+async def slack_post(url: str, text: str):
+    async with httpx.AsyncClient(timeout=20) as client:
+        await client.post(url, json={"text": text})
+
+async def alert_error(title: str, detail: str):
+    if ALERT_CHANNEL in ("slack", "both") and ALERT_SLACK_WEBHOOK:
+        await slack_post(ALERT_SLACK_WEBHOOK, f":warning: {title}\n{detail}")
+
+async def send_approval(review_id: str, message: str, stars: int, period: str, lang: str):
+    if APP_APPROVAL_CHANNEL == "slack" and APP_APPROVAL_WEBHOOK:
+        txt = f"*Trustpilot review {review_id}*\nStars: {stars} | Period: {period} | Lang: {lang}\n\n*Proposed reply:*\n{message}"
+        await slack_post(APP_APPROVAL_WEBHOOK, txt)
+
+async def post_reply(review_id: str, message: str) -> httpx.Response:
     if not TP_BUSINESS_TOKEN:
-        raise RuntimeError("TP_BUSINESS_TOKEN missing. Set it in environment.")
+        raise RuntimeError("TP_BUSINESS_TOKEN missing")
     url = f"{TP_API_BASE}/v1/private/reviews/{review_id}/reply"
     headers = {
         "Authorization": f"Bearer {TP_BUSINESS_TOKEN}",
         "Content-Type": "application/json",
-        "Idempotency-Key": str(uuid.uuid4())
+        "Idempotency-Key": str(uuid.uuid4()),
     }
     payload = {"message": message, "replySource": "automation"}
     async with httpx.AsyncClient(timeout=20) as client:
         return await client.post(url, headers=headers, json=payload)
 
-async def send_approval(review_id: str, message: str, stars: int, period: str, lang: str):
-    if APP_APPROVAL_CHANNEL == "slack" and APP_APPROVAL_WEBHOOK:
-        text = f"*Trustpilot review {review_id}*\nStars: {stars} | Period: {period} | Lang: {lang}\n\n*Proposed reply:*\n{message}\n\nApprove to post."
-        async with httpx.AsyncClient(timeout=20) as client:
-            await client.post(APP_APPROVAL_WEBHOOK, json={"text": text})
-
+# === Modello input webhook ===
 class ReviewEvent(BaseModel):
     review_id: str
     stars: int
-    created_at: str
+    created_at: str         # ISO UTC
     language: Optional[str] = "it"
     consumer_name: Optional[str] = None
     company_response_exists: Optional[bool] = False
 
-from fastapi import Request
-
+# === ENDPOINT WEBHOOK (questo è quello che ti serve) ===
 @app.post("/webhook/trustpilot")
 async def handle_trustpilot_event(event: ReviewEvent):
     if already_replied(event.review_id):
@@ -149,10 +130,13 @@ async def handle_trustpilot_event(event: ReviewEvent):
         save_log(event.review_id, "skip_company_already_replied", "", "", event.stars, "", "")
         return {"status": "skip", "reason": "company_already_replied"}
 
-    lang = choose_lang(event.language)
-    age = local_age_days(event.created_at)
-    period = period_from_age(age)
+    # Filtro stelle opzionale (es. APP_ALLOWED_STARS=4,5)
+    if event.stars not in APP_ALLOWED_STARS:
+        save_log(event.review_id, "skip_stars_filtered", "", "", event.stars, "", "")
+        return {"status": "skip", "reason": "stars_filtered"}
 
+    lang = choose_lang(event.language)
+    period = period_from_age(local_age_days(event.created_at))
     tpl = template_for(event.stars, period, lang)
     if not tpl:
         save_log(event.review_id, "skip_template_missing", "", lang, event.stars, period, "")
@@ -162,18 +146,19 @@ async def handle_trustpilot_event(event: ReviewEvent):
     name = event.consumer_name or "Cliente"
     message = tpl.replace("{name}", name)
 
-    segment_critico = event.stars <= 2
-    if APP_APPROVAL_MODE and segment_critico and period == "Fresco":
+    # 1–2★ fresche: bozza in approvazione
+    if APP_APPROVAL_MODE and event.stars <= 2 and period == "Fresco":
         await send_approval(event.review_id, message, event.stars, period, lang)
         save_log(event.review_id, "queued_for_approval", f"{event.stars}_{period}_{lang}", lang, event.stars, period, message)
         return {"status": "queued_for_approval"}
 
+    # Pubblicazione diretta
     try:
         resp = await post_reply(event.review_id, message)
         if resp.status_code in (200, 201):
             save_log(event.review_id, "replied", f"{event.stars}_{period}_{lang}", lang, event.stars, period, message)
             return {"status": "replied"}
-        elif resp.status_code == 409:
+        elif resp.status_code == 409:  # già risposto
             save_log(event.review_id, "skip_conflict", f"{event.stars}_{period}_{lang}", lang, event.stars, period, message)
             return {"status": "skip", "reason": "conflict"}
         else:
@@ -185,6 +170,8 @@ async def handle_trustpilot_event(event: ReviewEvent):
         await alert_error("Exception while replying", f"review_id={event.review_id} error={str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Healthcheck
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
